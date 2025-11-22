@@ -3,261 +3,230 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>OSCE/EPA a partir de PDF — Gerador de Estação</title>
-  <meta name="description" content="Upload de PDF ou DOCX e geração automática de checklist OSCE/EPA com devolutiva." />
+  <title>OSCE/EPA – Leitor de PDF → Checklist + Devolutiva</title>
   <script src="https://cdn.tailwindcss.com"></script>
-
-  <!-- PDF.js (ler PDF no navegador) -->
-  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
-  <script>
-    // Worker do PDF.js hospedado no CDN (funciona no GitHub Pages)
-    pdfjsLib.GlobalWorkerOptions.workerSrc =
-      'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
-  </script>
-
-  <!-- Mammoth (extrair texto de .docx no navegador) -->
-  <script src="https://unpkg.com/mammoth/mammoth.browser.min.js"></script>
+  <style>html, body { height: 100%; }</style>
+</head>
+<body class="min-h-screen bg-gradient-to-b from-white via-blue-50/30 to-white text-gray-900">
+  <div id="root"></div>
 
   <!-- React + Babel (sem build) -->
   <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <style>html, body { height: 100%; }</style>
-</head>
-<body class="min-h-screen bg-gradient-to-b from-white via-blue-50/30 to-white text-gray-900">
-  <div id="root"></div>
+  <!-- PDF.js (versão compatível com UMD/global window.pdfjsLib) -->
+  <script src="https://unpkg.com/pdfjs-dist@2.16.105/build/pdf.min.js"></script>
+  <script>
+    // Worker correto (mesma versão do PDF.js)
+    if (window.pdfjsLib) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://unpkg.com/pdfjs-dist@2.16.105/build/pdf.worker.min.js";
+    }
+  </script>
+
+  <!-- Mammoth (DOCX → texto) -->
+  <script src="https://unpkg.com/mammoth/mammoth.browser.min.js"></script>
 
   <script type="text/babel">
     const { useState, useMemo, useEffect } = React;
 
-    /* -------------------------------- UI base -------------------------------- */
-    function Button({ children, onClick, variant="primary", className="", type="button", disabled=false, ...props }) {
+    /* ================= UI ================= */
+    const clsJoin = (...xs) => xs.filter(Boolean).join(" ");
+    function Button({ children, onClick, variant="primary", className="", type="button", disabled=false }) {
       const base = "inline-flex items-center justify-center rounded-2xl px-4 py-2 text-sm font-medium border transition focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed";
       const styles = {
         primary: "bg-blue-600 text-white border-blue-700 enabled:hover:bg-blue-700 focus:ring-blue-600",
         secondary: "bg-white text-gray-900 border-gray-300 enabled:hover:bg-gray-50 focus:ring-gray-400",
         ghost: "bg-transparent text-gray-700 border-transparent enabled:hover:bg-gray-100 focus:ring-gray-300",
       };
-      return (
-        <button type={type} onClick={onClick} disabled={disabled}
-                className={[base, styles[variant] || styles.primary, className].join(" ")} {...props}>
-          {children}
-        </button>
-      );
+      return <button type={type} onClick={onClick} disabled={disabled} className={clsJoin(base, styles[variant], className)}>{children}</button>;
     }
-    function Card({ children, className = "" }) {
-      return <div className={["rounded-3xl border border-gray-200 bg-white/80 backdrop-blur shadow-sm", className].join(" ")}>{children}</div>;
-    }
-    function CardContent({ children, className = "" }) {
-      return <div className={className}>{children}</div>;
-    }
-    function SummaryStat({ label, value }) {
-      return (
-        <div className="rounded-2xl border border-gray-200 bg-white px-3 py-3">
-          <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">{label}</div>
-          <div className="text-base font-semibold text-gray-900">{value}</div>
-        </div>
-      );
-    }
-    function ProgressBar({ value }) {
+    const Card = ({ children, className="" }) => <div className={clsJoin("rounded-3xl border border-gray-200 bg-white/80 backdrop-blur shadow-sm", className)}>{children}</div>;
+    const CardContent = ({ children, className="" }) => <div className={className}>{children}</div>;
+    const SummaryStat = ({ label, value }) => (
+      <div className="rounded-2xl border border-gray-200 bg-white px-3 py-3">
+        <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">{label}</div>
+        <div className="text-base font-semibold text-gray-900">{value}</div>
+      </div>
+    );
+    const ProgressBar = ({ value }) => {
       const clamped = Math.max(0, Math.min(100, value || 0));
       return (
         <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
           <div className="h-full bg-blue-600 transition-all" style={{ width: clamped + "%" }} />
         </div>
       );
-    }
+    };
+    const ErrorBanner = ({ error, onClose }) => !error ? null : (
+      <div className="fixed bottom-4 left-4 right-4 z-50">
+        <div className="mx-auto max-w-3xl rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 p-3 text-sm shadow">
+          <div className="flex items-start gap-3">
+            <strong>Erro:</strong>
+            <div className="flex-1 whitespace-pre-wrap">{String(error)}</div>
+            <button className="text-rose-700" onClick={onClose} aria-label="Fechar">✕</button>
+          </div>
+        </div>
+      </div>
+    );
 
-    /* ---------------------------- Exemplo (fallback) --------------------------- */
-    // Texto de exemplo: EPA infecção de extremidades (caso do hálux necrosado).
-    const EXAMPLE_TEXT = `EPA — Reconhecer sinais de infecção em feridas de extremidades e instituir manejo inicial seguro.
-Paciente 32 anos, ferimento cortante no hálux direito há 4 dias, dor intensa, edema, calor local, drenagem purulenta, febre baixa, odor fétido, dificuldade para apoiar o pé. Diabético não controlado. Riscos: progressão para celulite grave, fascite necrosante, necrose digital/amputação, sepse. Itens esperados: anamnese dirigida; exame físico (perfusão/enchimento capilar, temperatura, pulsos); reconhecimento de gravidade; antibioticoterapia inicial; acionar supervisão se necessário; documentação e orientação.`;
-
-    /* -------------------- Upload/Leitura de PDF e DOCX ------------------------ */
-    async function extractTextFromPdf(file, setPreviewDataUrl) {
-      const buf = await file.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-
-      // Preview (primeira página)
-      try {
-        const page = await pdf.getPage(1);
-        const viewport = page.getViewport({ scale: 1.4 });
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        await page.render({ canvasContext: ctx, viewport }).promise;
-        setPreviewDataUrl(canvas.toDataURL());
-      } catch (e) {
-        setPreviewDataUrl(null);
-      }
-
-      // Extração de texto (todas as páginas)
-      let text = "";
+    /* ================= Extração de arquivos ================= */
+    async function extractPdfText(file) {
+      if (!window.pdfjsLib) throw new Error("PDF.js não carregou. Verifique conexão/CDN.");
+      const buffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+      let fullText = "";
       for (let p = 1; p <= pdf.numPages; p++) {
         const page = await pdf.getPage(p);
         const content = await page.getTextContent();
-        const strings = content.items.map(i => i.str);
-        text += strings.join(" ") + "\n";
+        fullText += content.items.map(it => it.str).join(" ") + "\n";
       }
-      return text.trim();
+      return fullText.trim();
+    }
+    async function extractDocxText(file) {
+      if (!window.mammoth) throw new Error("Mammoth (DOCX) não carregou.");
+      const buffer = await file.arrayBuffer();
+      const res = await window.mammoth.extractRawText({ arrayBuffer: buffer });
+      return (res.value || "").trim();
     }
 
-    async function extractTextFromDocx(file) {
-      const buf = await file.arrayBuffer();
-      const result = await window.mammoth.extractRawText({ arrayBuffer: buf });
-      return (result && result.value ? result.value : "").trim();
+    /* ================= Heurísticas ================= */
+    const DEFAULT_SECTIONS = [
+      {
+        id: "diagnostico",
+        title: "Avaliação diagnóstica",
+        description: "Classifique gravidade e apresente critérios utilizados.",
+        items: [
+          { id: "classificacao", title: "Classificação do quadro",
+            options: [
+              { value: "ok",  label: "Reconhece quadro grave quando presente", score: 2,
+                feedback: "Reconhecimento ágil dos sinais de gravidade, direcionando a conduta inicial com segurança." },
+              { value: "par", label: "Classifica como moderado", score: 1,
+                feedback: "Boa percepção, mas faltar lapidar critérios de gravidade para priorização adequada." },
+              { value: "no",  label: "Classifica como leve/ausente frente a sinais de alerta", score: 0,
+                feedback: "Subestimação do risco; revise os indicadores de gravidade para evitar atrasos críticos." },
+            ]},
+          { id: "criterios", title: "Critérios diagnósticos citados",
+            options: [
+              { value: "ok",  label: "Cita critérios completos e corretos", score: 2,
+                feedback: "Critérios essenciais foram contemplados, garantindo avaliação abrangente." },
+              { value: "par", label: "Cita parcialmente", score: 1,
+                feedback: "Citou parte dos critérios; revisar indicadores mandatórios para precisão diagnóstica." },
+              { value: "no",  label: "Insuficiente/incorreto", score: 0,
+                feedback: "Critérios insuficientes; requer reforço conceitual e treino supervisionado." },
+            ]},
+        ],
+      },
+      {
+        id: "conduta",
+        title: "Conduta inicial",
+        description: "Decisões assistenciais imediatas.",
+        items: [
+          { id: "local", title: "Local de cuidado",
+            options: [
+              { value: "ok",  label: "Indica internação/monitorização quando indicado", score: 2,
+                feedback: "Decisão adequada à severidade, priorizando segurança do paciente." },
+              { value: "par", label: "Observação em menor complexidade", score: 1,
+                feedback: "Cautela válida, mas cenários graves pedem internação para vigilância contínua." },
+              { value: "no",  label: "Define manejo ambulatorial em cenário de risco", score: 0,
+                feedback: "Inadequado ao risco; revise protocolos de segurança na tomada de decisão." },
+            ]},
+        ],
+      },
+      {
+        id: "prescricao",
+        title: "Plano terapêutico",
+        description: "Estrutura do plano e justificativa.",
+        items: [
+          { id: "plano", title: "Estrutura do plano",
+            options: [
+              { value: "ok",  label: "Plano completo (fases/tempos/volumes ou passos)", score: 2,
+                feedback: "Plano bem estruturado e seguro, com etapas definidas." },
+              { value: "par", label: "Plano parcial", score: 1,
+                feedback: "Aponta a etapa principal; detalhe fases e tempos para precisão." },
+              { value: "no",  label: "Plano não aderente ao recomendado", score: 0,
+                feedback: "Fora do protocolo; revisar diretrizes e parâmetros." },
+            ]},
+          { id: "just", title: "Escolha terapêutica e justificativa",
+            options: [
+              { value: "ok",  label: "Condiz com protocolo e justificativa clara", score: 2,
+                feedback: "Escolha alinhada ao protocolo institucional, com racional explícito." },
+              { value: "par", label: "Escolha citada sem especificidade", score: 1,
+                feedback: "Justificativa pouco específica; alinhar escolha a critérios clínicos." },
+              { value: "no",  label: "Escolha não indicada para o quadro", score: 0,
+                feedback: "Rever indicações, riscos e alternativas." },
+            ]},
+        ],
+      },
+      {
+        id: "orientacao",
+        title: "Comunicação e orientação",
+        description: "Orientações ao paciente/família e segurança.",
+        items: [
+          { id: "edu", title: "Orientações fornecidas",
+            options: [
+              { value: "ok",  label: "Completas (sinais de alarme, retorno, cuidados)", score: 2,
+                feedback: "Orientações claras e completas, reforçando segurança e adesão." },
+              { value: "par", label: "Parciais", score: 1,
+                feedback: "Incluiu parte das orientações; complementar sinais de alarme e retorno." },
+              { value: "no",  label: "Inadequadas/ausentes", score: 0,
+                feedback: "Faltaram orientações essenciais; isso compromete segurança e seguimento." },
+            ]},
+        ],
+      },
+    ];
+
+    function topKeywords(text, n=8) {
+      if (!text) return [];
+      const stop = new Set(["de","da","do","das","dos","a","o","e","em","no","na","nos","nas","um","uma","para","com","por","que","se","ao","os","as","ou","como","é","são","foi","ser","sem","mais","menos","quando","onde","qual","quais","sobre"]);
+      const tokens = text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu," ").split(/\s+/)
+        .filter(t => t.length >= 4 && !stop.has(t));
+      const f = {}; tokens.forEach(t => f[t]=(f[t]||0)+1);
+      return Object.entries(f).sort((a,b)=>b[1]-a[1]).slice(0,n).map(([k])=>k);
     }
+    const pickTitleFromText = (t) => {
+      if (!t) return "Prova OSCE/EPA – Estação (defina pelo PDF)";
+      const lines = t.split(/\n+/).map(s=>s.trim()).filter(Boolean);
+      const hit = lines.find(l => /EPA|Estação|Atividade Profissional Confiável/i.test(l)) || lines[0];
+      return (hit || "Prova OSCE/EPA – Estação").slice(0,140);
+    };
+    const generateSectionsFromText = (text) => {
+      const kws = topKeywords(text, 10);
+      const clone = JSON.parse(JSON.stringify(DEFAULT_SECTIONS));
+      if (kws.length) clone[0].description += ` (palavras‑chave: ${kws.join(", ")})`;
+      return clone;
+    };
 
-    /* ------------------------- Heurísticas de geração ------------------------- */
-    function norm(s) {
-      return (s || "")
-        .toLowerCase()
-        .normalize("NFD")
-        .replace(/\p{Diacritic}/gu, "");
-    }
-
-    function detectTopic(text) {
-      const n = norm(text);
-      if (/\bdesidrat/.test(n)) return "Desidratação e reidratação";
-      if (/\binfec|ferid|necros|halux|haux|pe\b/.test(n)) return "Infecção de extremidades";
-      if (/\burgenc|emergenc|abcde/.test(n)) return "Reconhecimento de urgências";
-      return "Avaliação clínica inicial";
-    }
-
-    // Gera checklist OSCE de 5 domínios a partir do texto extraído
-    function generateOsceChecklist(text) {
-      const topic = detectTopic(text);
-      const n = norm(text);
-
-      const hasPerfusao = /perfus|pulsos|enchimento capilar|capilar/.test(n);
-      const hasFebre = /febre|pirexia/.test(n);
-      const hasPurul = /pusu|purul|secrec/.test(n);
-      const hasOdor = /odor|fetid/.test(n);
-      const hasDiab = /diabet/.test(n);
-
-      // Itens dinâmicos conforme o conteúdo detectado
-      const anamnese = [
-        { value: "mecanismo", label: "Pergunta mecanismo e tempo da lesão", score: 2 },
-        { value: "comorb", label: hasDiab ? "Investiga comorbidades relevantes (DM presente)" : "Investiga comorbidades e medicações", score: 2 },
-        { value: "gravidade", label: "Explora sinais de gravidade (piora, dor desproporcional, progressão)", score: 2 },
-        { value: "sist", label: hasFebre ? "Investiga sintomas sistêmicos (febre/letargia)" : "Investiga sintomas sistêmicos", score: 1 },
-      ];
-
-      const exame = [
-        { value: "inspecao", label: "Realiza inspeção adequada", score: 2 },
-        { value: "colecao", label: hasPurul ? "Palpa flutuação/coleção (secreção presente)" : "Palpa flutuação/coleção", score: 2 },
-        { value: "perfusao", label: hasPerfusao ? "Avalia perfusão (pulsos, cor, enchimento capilar, temperatura)" : "Avalia perfusão distal", score: 2 },
-        { value: "extensao", label: "Avalia extensão de celulite/linfangite", score: 2 },
-        { value: "odor", label: hasOdor ? "Registra odor fétido", score: 1 },
-        { value: "sinais_sist", label: "Registra sinais sistêmicos", score: 1 },
-      ];
-
-      const reconhecimento = [
-        { value: "inf_ativa", label: "Reconhece infecção ativa de partes moles", score: 2 },
-        { value: "risco_necrose", label: /necros|amput/.test(n) ? "Reconhece risco de necrose/amputação" : "Avalia risco de piora tecidual", score: 2 },
-        { value: "fascite", label: "Considera fascite necrosante quando pertinente", score: 1 },
-        { value: "gravidade_urg", label: "Classifica gravidade como urgência quando aplicável", score: 2 },
-        { value: "supervisao", label: "Aciona supervisão quando extrapola competência", score: 2 },
-      ];
-
-      const conduta = [
-        { value: "atb", label: "Indica antibioticoterapia inicial apropriada", score: 2 },
-        { value: "drenagem", label: "Avalia necessidade de drenagem/imobilização/orto", score: 2 },
-        { value: "exames", label: "Solicita exames úteis (hemograma, PCR, glicemia)", score: 1 },
-        { value: "follow", label: "Planeja reavaliação precoce e sinais de alarme", score: 2 },
-        { value: "documenta", label: "Documenta raciocínio e conduta de forma clara", score: 2 },
-      ];
-
-      const prof = [
-        { value: "limites", label: "Reconhece limites e responsabilidade ética-legal", score: 2 },
-        { value: "seguranca", label: "Prioriza segurança do paciente", score: 2 },
-        { value: "comunicacao", label: "Comunica riscos e conduta ao paciente/família", score: 2 },
-        { value: "equidade", label: "Age com equidade e sem vieses", score: 1 },
-      ];
-
-      const sections = [
-        { id: "anamnese", title: "Anamnese dirigida", description: `Tópico: ${topic}.`, items: anamnese },
-        { id: "exame", title: "Exame físico", items: exame },
-        { id: "reconhecimento", title: "Reconhecimento clínico", items: reconhecimento },
-        { id: "conduta", title: "Conduta inicial", items: conduta },
-        { id: "prof", title: "Profissionalismo e segurança", items: prof },
-      ];
-
-      return { title: `OSCE/EPA — ${topic}`, sections };
-    }
-
-    // Gera devolutiva (pontos fortes, consolidação, melhorias)
-    function buildFeedback(sections, responses) {
-      const allItems = sections.flatMap(s => s.items);
-      const entries = allItems.map(it => ({ it, sel: responses[it.id] })).filter(e => e.sel);
-
-      const strengths = entries.filter(e => e.sel.score === 2).map(e => "• " + e.sel.feedback);
-      const inProgress = entries.filter(e => e.sel.score === 1).map(e => "• " + e.sel.feedback);
-      const improvements = entries.filter(e => e.sel.score === 0).map(e => "• " + e.sel.feedback);
-
-      const sum = entries.reduce((acc, e) => acc + (e.sel.score || 0), 0);
-      const ratio = allItems.length ? sum / (allItems.length * 2) : 0;
-      const level =
-        ratio >= 0.75 ? { label: "Desempenho competente", badge: "bg-emerald-50 text-emerald-800 border border-emerald-200" } :
-        ratio >= 0.45 ? { label: "Parcialmente competente", badge: "bg-amber-50 text-amber-800 border border-amber-200" } :
-                        { label: "Necessita desenvolvimento", badge: "bg-rose-50 text-rose-800 border border-rose-200" };
-
-      const intro =
-        "Durante esta estação prática, observou-se o raciocínio clínico e a conduta frente ao cenário descrito no arquivo carregado. Abaixo, devolutiva estruturada:";
-      const parts = [
-        intro,
-        strengths.length ? "🟢 Pontos fortes\n" + strengths.join("\n") : "",
-        inProgress.length ? "🟡 Aspectos em consolidação\n" + inProgress.join("\n") : "",
-        improvements.length ? "🔴 Oportunidades de aprimoramento\n" + improvements.join("\n") : "",
-      ].filter(Boolean);
-
-      return { text: parts.join("\n\n"), ratio, level };
-    }
-
-    /* ------------------------------ Componentes ------------------------------- */
-    function ChecklistOption({ option, selected, onSelect }) {
+    /* ================= Componentes ================= */
+    function ChecklistOptionButton({ option, selected, onSelect }) {
       const base = "w-full text-left border rounded-2xl px-4 py-3 text-sm transition shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2";
       const active = selected ? "border-blue-600 bg-blue-50 text-blue-900 focus:ring-blue-500"
                               : "border-gray-200 bg-white hover:border-blue-400 hover:bg-blue-50/60 focus:ring-blue-400";
-      // Mapear score→texto e estilo para tag
       const TAGS = {
         2: "bg-emerald-50 text-emerald-700 border border-emerald-200",
         1: "bg-amber-50 text-amber-700 border border-amber-200",
         0: "bg-rose-50 text-rose-700 border border-rose-200",
       };
-      const tagText = selected?.score === 2 ? "Realizado corretamente" : selected?.score === 1 ? "Parcial" : selected ? "Não realizado" : null;
+      const label = selected?.score === 2 ? "Realizado corretamente" : selected?.score === 1 ? "Parcial" : selected ? "Não realizado" : "";
       return (
-        <button type="button" className={[base, active].join(" ")} onClick={onSelect}>
+        <button type="button" className={clsJoin(base, active)} onClick={onSelect}>
           <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
             <span className="font-medium">{option.label}</span>
-            {selected && (
-              <span className={["inline-flex items-center rounded-xl px-3 py-1 text-xs font-medium", TAGS[selected.score]].join(" ")}>
-                {tagText}
-              </span>
-            )}
+            {selected && <span className={clsJoin("inline-flex items-center rounded-xl px-3 py-1 text-xs font-medium", TAGS[selected.score])}>{label}</span>}
           </div>
         </button>
       );
     }
-
     function ChecklistItem({ item, selectedOption, onSelect }) {
-      // Cria feedback padrão para cada escolha (2/1/0)
-      const options = [
-        { ...item, value: "ok", label: item.labelOk || "Realizado corretamente", score: 2, feedback: "Critério atendido com segurança e completude." },
-        { ...item, value: "partial", label: item.labelPartial || "Parcial", score: 1, feedback: "Execução parcial — revisar pontos críticos para garantir segurança." },
-        { ...item, value: "no", label: item.labelNo || "Não realizado", score: 0, feedback: "Não realizado — requer retomada conceitual e prática supervisionada." },
-      ];
       return (
         <div className="space-y-3">
-          <h3 className="text-sm font-semibold text-gray-900">{item.title || item.label}</h3>
+          <h3 className="text-sm font-semibold text-gray-900">{item.title}</h3>
           <div className="grid gap-2">
-            {options.map(opt => (
-              <ChecklistOption
+            {item.options.map((opt) => (
+              <ChecklistOptionButton
                 key={opt.value}
                 option={opt}
-                selected={selectedOption}
+                selected={selectedOption?.value === opt.value ? opt : null}
                 onSelect={() => onSelect(item.id, opt)}
               />
             ))}
@@ -265,7 +234,6 @@ Paciente 32 anos, ferimento cortante no hálux direito há 4 dias, dor intensa, 
         </div>
       );
     }
-
     function ChecklistSection({ section, responses, onSelect }) {
       return (
         <Card className="border-0 shadow">
@@ -275,168 +243,192 @@ Paciente 32 anos, ferimento cortante no hálux direito há 4 dias, dor intensa, 
               {section.description && <p className="text-sm text-gray-600">{section.description}</p>}
             </div>
             <div className="space-y-6">
-              {section.items.map((it, idx) => (
-                <ChecklistItem
-                  key={section.id + "-" + idx}
-                  item={{ id: `${section.id}_${idx}`, label: it.label, title: it.title || it.label }}
-                  selectedOption={responses[`${section.id}_${idx}`]}
-                  onSelect={onSelect}
-                />
+              {section.items.map((item) => (
+                <ChecklistItem key={item.id} item={item} selectedOption={responses[item.id]} onSelect={onSelect} />
               ))}
             </div>
           </CardContent>
         </Card>
       );
     }
-
-    function Uploader({ onText, setPreviewDataUrl }) {
-      const [fileName, setFileName] = useState("");
-      const [busy, setBusy] = useState(false);
-      const accept = ".pdf,application/pdf,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-
-      const handleFile = async e => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-        setBusy(true);
-        setFileName(file.name);
-        try {
-          const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
-          const isDocx = file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || /\.docx$/i.test(file.name);
-
-          let text = "";
-          if (isPdf) text = await extractTextFromPdf(file, setPreviewDataUrl);
-          else if (isDocx) { setPreviewDataUrl(null); text = await extractTextFromDocx(file); }
-          else { alert("Formato não suportado. Use PDF ou DOCX."); setBusy(false); return; }
-
-          onText(text || "");
-        } catch (err) {
-          console.error(err);
-          alert("Falha ao ler o arquivo. Tente outro PDF/DOCX.");
-        } finally {
-          setBusy(false);
-        }
-      };
-
+    function CaseImage({ src, onPick }) {
       return (
         <Card className="border-0 shadow">
           <CardContent className="p-6 md:p-8 space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-lg font-semibold text-gray-900">1) Carregar PDF ou DOCX</h2>
-                <p className="text-sm text-gray-600">O texto será extraído e usado para gerar a estação/teste.</p>
+                <h2 className="text-lg font-semibold text-gray-900">Imagem do cenário (opcional)</h2>
+                <p className="text-sm text-gray-600">Fotografia clínica, fluxograma, quadro, etc.</p>
               </div>
-              <input type="file" accept={accept} onChange={handleFile} aria-label="Selecionar arquivo PDF ou DOCX" className="text-sm" />
+              <input type="file" accept="image/*" className="text-sm"
+                onChange={(e) => {
+                  const f = e.target.files?.[0]; if (!f) return;
+                  const r = new FileReader();
+                  r.onload = ev => onPick(ev.target.result);
+                  r.readAsDataURL(f);
+                }} />
             </div>
-            {fileName && <p className="text-xs text-gray-500">Arquivo: {fileName}</p>}
-            {busy && <p className="text-sm text-blue-700">Lendo arquivo…</p>}
+            <div className="aspect-video w-full overflow-hidden rounded-2xl bg-gray-100 border flex items-center justify-center">
+              {src ? <img src={src} alt="Imagem do cenário" className="w-full h-full object-contain" /> : <span className="text-xs text-gray-500">Nenhuma imagem selecionada.</span>}
+            </div>
           </CardContent>
         </Card>
       );
     }
 
-    /* --------------------------------- App ----------------------------------- */
-    function App() {
-      const [previewDataUrl, setPreviewDataUrl] = useState(null);
-      const [rawText, setRawText] = useState(EXAMPLE_TEXT);
-      const [generated, setGenerated] = useState(() => generateOsceChecklist(EXAMPLE_TEXT));
-      const [responses, setResponses] = useState({});
-      const [showFeedback, setShowFeedback] = useState(false);
-      const { text: feedbackText, ratio, level } = useMemo(
-        () => buildFeedback(generated.sections, responses),
-        [generated, responses]
+    /* ================= Devolutiva ================= */
+    const OVERALL = {
+      high:  { label: "Desempenho competente",        badge: "border-emerald-200 bg-emerald-50 text-emerald-800", closing: "Condução alinhada às melhores práticas; mantenha atualização e clareza na comunicação." },
+      medium:{ label: "Parcialmente competente",      badge: "border-amber-200 bg-amber-50 text-amber-800",       closing: "Reforçar critérios de gravidade e estrutura do plano; praticar explicação das condutas." },
+      low:   { label: "Necessita desenvolvimento",    badge: "border-rose-200 bg-rose-50 text-rose-800",          closing: "Rever critérios, plano e orientações; atuar sob supervisão próxima." },
+    };
+    function buildFeedback(sections, responses) {
+      const ALL_ITEMS = sections.flatMap(s => s.items);
+      const entries = ALL_ITEMS.map(it => ({ it, sel: responses[it.id] })).filter(e => e.sel);
+      const strengths = entries.filter(e => e.sel.score === 2).map(e => "• " + e.sel.feedback);
+      const inProg    = entries.filter(e => e.sel.score === 1).map(e => "• " + e.sel.feedback);
+      const improv    = entries.filter(e => e.sel.score === 0).map(e => "• " + e.sel.feedback);
+      const total = ALL_ITEMS.length;
+      const sum = entries.reduce((a,e)=>a+(e.sel.score||0),0);
+      const ratio = total ? sum/(total*2) : 0;
+      const level = ratio>=0.75 ? OVERALL.high : ratio>=0.45 ? OVERALL.medium : OVERALL.low;
+      const text = [
+        "Devolutiva estruturada a partir do checklist:",
+        strengths.length ? "🟢 Pontos fortes\n"+strengths.join("\n") : "",
+        inProg.length    ? "🟡 Aspectos em consolidação\n"+inProg.join("\n") : "",
+        improv.length    ? "🔴 Oportunidades de aprimoramento\n"+improv.join("\n") : "",
+        level.closing
+      ].filter(Boolean).join("\n\n");
+      return { text, ratio, level };
+    }
+
+    /* ================= Source Loader ================= */
+    function SourceLoader({ sourceText, setSourceText, scenarioTitle, setScenarioTitle, setSections, setError }) {
+      const [busy, setBusy] = useState(false);
+      const [fileName, setFileName] = useState("");
+
+      async function onFile(file) {
+        if (!file) return;
+        setBusy(true); setFileName(file.name); setError("");
+        try {
+          let text = "";
+          if (file.name.toLowerCase().endsWith(".pdf")) text = await extractPdfText(file);
+          else if (file.name.toLowerCase().endsWith(".docx")) text = await extractDocxText(file);
+          else throw new Error("Formato não suportado. Use PDF ou DOCX.");
+          setSourceText(text);
+          setScenarioTitle(pickTitleFromText(text));
+        } catch (e) {
+          console.error(e);
+          setError(e.message || "Falha ao ler arquivo.");
+        } finally {
+          setBusy(false);
+        }
+      }
+      function build() {
+        if (!sourceText) { setError("Sem texto: carregue um PDF/DOCX ou cole o conteúdo."); return; }
+        setSections(generateSectionsFromText(sourceText));
+      }
+
+      return (
+        <Card className="border-0 shadow">
+          <CardContent className="p-6 md:p-8 space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">1) Carregar cenário (PDF ou DOCX)</h2>
+                <p className="text-sm text-gray-600">O texto é extraído no navegador e usado para sugerir o checklist.</p>
+              </div>
+              <input type="file" accept=".pdf,.docx" className="text-sm"
+                onChange={(e) => onFile(e.target.files?.[0])} />
+            </div>
+            {fileName && <p className="text-xs text-gray-500">Arquivo: {fileName} {busy ? "— lendo…" : ""}</p>}
+
+            <div className="grid gap-3">
+              <label className="text-xs text-gray-600">Título da estação</label>
+              <input type="text" className="rounded-xl border border-gray-300 px-3 py-2 text-sm"
+                value={scenarioTitle} onChange={(e)=>setScenarioTitle(e.target.value)} />
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-xs text-gray-600">Pré‑visualização/edição do texto extraído</label>
+                <Button variant="secondary" onClick={build} disabled={!sourceText || busy}>Gerar checklist</Button>
+              </div>
+              <textarea className="w-full min-h-[160px] rounded-2xl border border-gray-200 p-3 text-sm"
+                value={sourceText} onChange={(e)=>setSourceText(e.target.value)}
+                placeholder="Carregue um PDF/DOCX ou cole o texto do cenário aqui…" />
+            </div>
+          </CardContent>
+        </Card>
       );
+    }
 
-      const totalItems = generated.sections.flatMap(s => s.items).length;
+    /* ================= App ================= */
+    function App() {
+      const [scenarioTitle, setScenarioTitle] = useState("Prova OSCE/EPA – Estação (defina pelo PDF)");
+      const [sourceText, setSourceText] = useState("");
+      const [sections, setSections] = useState(DEFAULT_SECTIONS);
+      const [responses, setResponses] = useState({});
+      const [caseImage, setCaseImage] = useState(null);
+      const [showFeedback, setShowFeedback] = useState(false);
+      const [copyMsg, setCopyMsg] = useState("");
+      const [error, setError] = useState("");
+
+      const ALL_ITEMS = useMemo(() => sections.flatMap(s => s.items), [sections]);
+      const totalItems = ALL_ITEMS.length;
       const answeredCount = Object.keys(responses).length;
+      const answeredScore = useMemo(() => Object.values(responses).reduce((s, opt) => s + (opt?.score || 0), 0), [responses]);
       const completion = totalItems ? answeredCount / totalItems : 0;
+      const { text: feedbackText, ratio, level } = useMemo(() => buildFeedback(sections, responses), [sections, responses]);
+      const canGenerate = answeredCount === totalItems;
 
-      const regenerate = () => {
-        const text = (rawText || "").trim();
-        if (!text) { alert("Sem texto. Carregue um arquivo ou edite o campo de texto."); return; }
-        setGenerated(generateOsceChecklist(text));
-        setResponses({});
-        setShowFeedback(false);
-        window.scrollTo({ top: 0, behavior: "smooth" });
-      };
-
-      const handleSelect = (id, option) => {
-        setResponses(prev => ({ ...prev, [id]: option }));
-        setShowFeedback(false);
-      };
-
-      const handleCopy = async () => {
+      const onSelect = (id, opt) => { setResponses(prev => ({ ...prev, [id]: opt })); setShowFeedback(false); };
+      const onGenerate = () => { if (canGenerate) setShowFeedback(true); };
+      const onReset = () => { setResponses({}); setShowFeedback(false); setCopyMsg(""); };
+      const onCopy = async () => {
         if (!feedbackText) return;
-        try { await navigator.clipboard.writeText(feedbackText); alert("Devolutiva copiada."); }
-        catch { alert("Não foi possível copiar automaticamente."); }
+        try { await navigator.clipboard.writeText(feedbackText); setCopyMsg("Texto copiado."); }
+        catch { setCopyMsg("Falha ao copiar automaticamente."); }
+        setTimeout(()=>setCopyMsg(""), 2500);
       };
+
+      // Captura erros JS globais para evitar "tela branca"
+      useEffect(() => {
+        const handler = (ev) => setError(ev?.message || "Erro desconhecido de execução.");
+        window.addEventListener("error", handler);
+        return () => window.removeEventListener("error", handler);
+      }, []);
 
       return (
         <div className="min-h-screen p-4 md:p-8">
           <div className="max-w-6xl mx-auto space-y-6">
             <header className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <div className="space-y-1">
-                <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Gerador de Estação OSCE/EPA a partir de PDF/DOCX</h1>
-                <p className="text-sm text-gray-600 max-w-3xl">
-                  Carregue um PDF ou DOCX com o cenário/roteiro. O sistema extrai o texto e monta um checklist estruturado com devolutiva.
-                </p>
+                <h1 className="text-2xl md:text-3xl font-bold text-gray-900">{scenarioTitle}</h1>
+                <p className="text-sm text-gray-600 max-w-3xl">Carregue PDF/DOCX → gere checklist → marque os itens → gere devolutiva.</p>
               </div>
               <div className="flex items-center gap-2 text-sm text-gray-500">
                 <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-blue-100 text-blue-700 font-semibold">OSCE</span>
                 <div>
-                  <p className="font-medium text-gray-700">Geração automática</p>
-                  <p>PDF/DOCX → Checklist</p>
+                  <p className="font-medium text-gray-700">Estação</p>
+                  <p>EPA/OSCE com base no arquivo</p>
                 </div>
               </div>
             </header>
 
             <div className="grid gap-6 lg:grid-cols-[2fr,1fr]">
               <div className="space-y-6">
-                <Uploader onText={(t) => setRawText(t || EXAMPLE_TEXT)} setPreviewDataUrl={setPreviewDataUrl} />
-
-                <Card className="border-0 shadow">
-                  <CardContent className="p-6 md:p-8 space-y-4">
-                    <h2 className="text-lg font-semibold text-gray-900">2) Texto extraído (editável)</h2>
-                    <p className="text-sm text-gray-600">Revise/edite se necessário e clique em “Gerar checklist”.</p>
-                    <textarea
-                      value={rawText}
-                      onChange={(e) => setRawText(e.target.value)}
-                      rows={8}
-                      className="w-full rounded-2xl border border-gray-300 p-3 text-sm"
-                      placeholder="O texto do seu PDF/DOCX aparecerá aqui…"
-                    />
-                    <div className="flex items-center gap-2">
-                      <Button onClick={regenerate}>Gerar checklist</Button>
-                      <Button variant="secondary" onClick={() => { setResponses({}); setShowFeedback(false); }}>Limpar seleção</Button>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                {previewDataUrl && (
-                  <Card className="border-0 shadow">
-                    <CardContent className="p-6 md:p-8">
-                      <h2 className="text-lg font-semibold text-gray-900 mb-3">Pré‑visualização do PDF (1ª página)</h2>
-                      <img src={previewDataUrl} alt="Pré-visualização da primeira página do PDF" className="w-full rounded-2xl border" />
-                    </CardContent>
-                  </Card>
-                )}
-
-                <Card className="border-0 shadow">
-                  <CardContent className="p-6 md:p-8 space-y-6">
-                    <div className="flex items-center justify-between">
-                      <h2 className="text-lg font-semibold text-gray-900">{generated.title}</h2>
-                      <div className="w-40"><ProgressBar value={completion * 100} /></div>
-                    </div>
-
-                    {generated.sections.map((section) => (
-                      <ChecklistSection
-                        key={section.id}
-                        section={section}
-                        responses={responses}
-                        onSelect={handleSelect}
-                      />
-                    ))}
-                  </CardContent>
-                </Card>
+                <SourceLoader
+                  sourceText={sourceText}
+                  setSourceText={setSourceText}
+                  scenarioTitle={scenarioTitle}
+                  setScenarioTitle={setScenarioTitle}
+                  setSections={setSections}
+                  setError={setError}
+                />
+                <CaseImage src={caseImage} onPick={setCaseImage} />
+                {sections.map((section) => (
+                  <ChecklistSection key={section.id} section={section} responses={responses} onSelect={onSelect} />
+                ))}
               </div>
 
               <div className="space-y-6">
@@ -444,17 +436,37 @@ Paciente 32 anos, ferimento cortante no hálux direito há 4 dias, dor intensa, 
                   <CardContent className="p-6 md:p-8 space-y-5">
                     <div>
                       <h2 className="text-lg font-semibold text-gray-900">Resumo</h2>
-                      <p className="text-sm text-gray-600">Acompanhe o preenchimento dos critérios da estação.</p>
+                      <p className="text-sm text-gray-600">Progresso do preenchimento.</p>
                     </div>
                     <div className="grid grid-cols-2 gap-3">
-                      <SummaryStat label="Critérios respondidos" value={`${Object.keys(responses).length}/${generated.sections.flatMap(s => s.items).length}`} />
+                      <SummaryStat label="Critérios respondidos" value={`${answeredCount}/${totalItems}`} />
                       <SummaryStat label="Conclusão" value={`${Math.round(completion * 100)}%`} />
-                      <SummaryStat label="Percentual final" value={`${Math.round(ratio * 100)}%`} />
-                      <div className={["rounded-2xl px-3 py-3", level.badge].join(" ")}>
+                      <SummaryStat label="Pontuação" value={answeredScore} />
+                      <SummaryStat label="Percentual final" value={answeredCount ? `${Math.round(ratio * 100)}%` : "—"} />
+                    </div>
+                    {answeredCount > 0 && (
+                      <div className={clsJoin("rounded-2xl px-3 py-3", level.badge)}>
                         <div className="text-xs uppercase tracking-wide">Classificação</div>
                         <div className="text-base font-semibold">{level.label}</div>
                       </div>
+                    )}
+                    <ProgressBar value={completion * 100} />
+                  </CardContent>
+                </Card>
+
+                <Card className="border-0 shadow">
+                  <CardContent className="p-6 md:p-8 space-y-4">
+                    <h2 className="text-lg font-semibold text-gray-900">Ações rápidas</h2>
+                    <div className="flex flex-col gap-2">
+                      <Button onClick={onGenerate} disabled={!canGenerate}>Gerar devolutiva</Button>
+                      <Button variant="secondary" onClick={onReset} disabled={answeredCount === 0}>Limpar seleção</Button>
+                      <Button variant="secondary" onClick={() => window.print()}>Imprimir</Button>
+                      <Button variant="ghost" onClick={onCopy} disabled={!feedbackText}>Copiar texto</Button>
                     </div>
+                    {!canGenerate && (
+                      <p className="text-xs text-gray-500">Responda todos os {totalItems} critérios para liberar a devolutiva automática.</p>
+                    )}
+                    {copyMsg && <p className="text-xs text-gray-500">{copyMsg}</p>}
                   </CardContent>
                 </Card>
 
@@ -462,40 +474,21 @@ Paciente 32 anos, ferimento cortante no hálux direito há 4 dias, dor intensa, 
                   <CardContent className="p-6 md:p-8 space-y-4">
                     <div className="flex items-center justify-between gap-3">
                       <div>
-                        <h2 className="text-lg font-semibold text-gray-900">Devolutiva automatizada</h2>
-                        <p className="text-sm text-gray-600">Texto gerado a partir do checklist preenchido.</p>
+                        <h2 className="text-lg font-semibold text-gray-900">Devolutiva</h2>
+                        <p className="text-sm text-gray-600">Gerada a partir das marcações do checklist.</p>
                       </div>
-                      <Button variant="secondary" onClick={handleCopy} disabled={!feedbackText}>Copiar texto</Button>
+                      <Button variant="secondary" onClick={onCopy} disabled={!feedbackText}>Copiar</Button>
                     </div>
                     <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4 text-sm leading-relaxed text-gray-800 whitespace-pre-line min-h-[220px]">
-                      {showFeedback ? feedbackText : "Selecione as opções dos critérios e a devolutiva aparecerá aqui."}
+                      {showFeedback ? feedbackText : "Selecione todos os critérios e clique em “Gerar devolutiva”."}
                     </div>
-                    <div className="flex items-center gap-2">
-                      <Button onClick={() => setShowFeedback(true)} disabled={Object.keys(responses).length === 0}>Gerar devolutiva</Button>
-                      <Button variant="secondary" onClick={() => window.print()}>Imprimir</Button>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                <Card className="border-0 shadow">
-                  <CardContent className="p-6 md:p-8">
-                    <h2 className="text-lg font-semibold text-gray-900 mb-2">Referências (ABNT)</h2>
-                    <ol className="list-decimal pl-5 space-y-2 text-sm text-gray-700">
-                      <li>BRASIL. Ministério da Educação. Conselho Nacional de Educação. Câmara de Educação Superior.
-                        <strong> Resolução CNE/CES nº 3, de 20 de junho de 2014</strong>. Institui Diretrizes Curriculares Nacionais do Curso de Graduação em Medicina.
-                        <em> Diário Oficial da União</em>, Brasília, 23 jun. 2014. Seção 1, p. 8–11.
-                      </li>
-                      <li>TEN CATE, O.; TAYLOR, D. R. <strong>AMEE Guide No. 140</strong>: writing EPAs. <em>Medical Teacher</em>, 2021. (Guia prático para redação de EPAs).</li>
-                      <li>ENGLANDER, R. et al. <strong>Core EPAs for Entering Residency</strong>. AAMC, 2016. (Matriz de EPAs núcleo).</li>
-                    </ol>
-                    <p className="text-xs text-gray-500 mt-3">
-                      Este protótipo é para uso acadêmico e deve ser alinhado aos protocolos institucionais vigentes.
-                    </p>
                   </CardContent>
                 </Card>
               </div>
             </div>
           </div>
+
+          <ErrorBanner error={error} onClose={() => setError("")} />
         </div>
       );
     }
